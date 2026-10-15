@@ -40,8 +40,26 @@ pipeline {
         }
         stage('Deploy') {
             steps {
-                echo 'Deploying models..'
-                echo 'Running a script to trigger pull and start a docker container'
+                script {
+                    docker.withRegistry('', registryCredential) {
+                        sh '''
+                            set -eu
+
+                            IMAGE="$registry:$BUILD_NUMBER"
+                            docker pull "$IMAGE"
+
+                            if docker container inspect house-price-api >/dev/null 2>&1; then
+                                docker rm -f house-price-api
+                            fi
+
+                            docker run -d \
+                                --name house-price-api \
+                                --restart unless-stopped \
+                                -p 30001:30000 \
+                                "$IMAGE"
+                        '''
+                    }
+                }
             }
         }
     }
