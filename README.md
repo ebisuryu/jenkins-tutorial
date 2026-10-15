@@ -2,7 +2,7 @@
 
 Use Jenkins to test a trained house price prediction model, build a Docker image for its FastAPI service, and publish the image to Docker Hub.
 
-The main pipeline implements testing and image publishing. Its `Deploy` stage currently prints messages only. Run the published image manually using the instructions below, or extend the stage for your deployment environment.
+The Multibranch Pipeline runs model tests for pull requests. On `main`, it also builds and publishes the image, then replaces the local `house-price-api` container on port `30001`.
 
 Run all commands from the repository root unless stated otherwise.
 
@@ -193,16 +193,116 @@ Push the repository, including the model artifact and pipeline files, to a Git r
 | `jenkins/parallel.Jenkinsfile` | Runs `test1` and `test2` in parallel, followed by Build and Deploy messages. |
 | `Jenkinsfile` | Runs the model test in `python:3.8`, builds the API image, and pushes it to Docker Hub. |
 
-The main pipeline retains up to five builds and applies a five-day retention limit. It publishes `<registry>:<BUILD_NUMBER>` and `<registry>:latest`. A successful build does not start the API: the Deploy stage only prints messages.
+The main pipeline retains up to five builds and applies a five-day retention limit. It publishes `<registry>:<BUILD_NUMBER>` and `<registry>:latest`. In a Multibranch Pipeline, the Build and Deploy stages run only on `main`; Deploy replaces the local `house-price-api` container using the build-number image tag.
 
-### Trigger builds after repository changes
+## Automatically test pull requests
 
-Pushing code alone does not trigger a build with the current Jenkinsfile. Configure a job trigger:
+Use a **Multibranch Pipeline** with GitHub Branch Source for pull request discovery. The separate Pipeline jobs above are useful for manual examples.
 
-- For local Jenkins, enable **Poll SCM** with a schedule such as `H/5 * * * *` to check for changes approximately every five minutes.
-- For GitHub webhooks, install the GitHub plugin, enable **GitHub hook trigger for GITScm polling**, and configure the repository webhook to send push events to `https://YOUR_REACHABLE_JENKINS_URL/github-webhook/`. GitHub must be able to reach this URL; `localhost:8081` is only accessible locally.
+### 1. Configure GitHub credentials and fix status reporting
 
-See the official [Pipeline SCM documentation](https://plugins.jenkins.io/workflow-scm-step/) for polling behavior.
+A build can succeed in Jenkins while GitHub shows no result. If Jenkins logs `Could not update commit status` with HTTP `403` and `Resource not accessible by personal access token`, update the token used by `github-credentials`:
+
+1. In GitHub, open **Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
+2. Edit the token used by Jenkins, or generate a replacement. Select resource owner `ebisuryu` and grant access to `jenkins-tutorial`.
+3. Set these repository permissions:
+
+   | Permission | Access |
+   | --- | --- |
+   | Contents | Read-only |
+   | Pull requests | Read-only |
+   | Metadata | Read-only (automatically included) |
+   | Commit statuses | Read and write |
+
+4. Save the permissions. If replacing the token, copy it directly into Jenkins: **Manage Jenkins → Credentials → System → Global credentials → github-credentials → Update**. Use **Username with password**, username `ebisuryu`, and the token as the password. Keep ID `github-credentials`.
+5. In the Multibranch job, confirm **Branch Sources → GitHub → Credentials** selects `github-credentials`.
+6. Rerun the PR build and confirm the commit status appears on GitHub. Existing completed builds are not automatically republished when token permissions change.
+
+These GitHub credentials are separate from the `dockerhub` credentials used to publish images. See [GitHub token permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens).
+
+### 2. Configure the Multibranch job
+
+1. Install **GitHub Branch Source** under **Manage Jenkins → Plugins**.
+2. Create **New Item → Multibranch Pipeline**, or configure the existing **Multibranch Pipeline** job.
+3. Under **Branch Sources → GitHub**, select `github-credentials`, owner `ebisuryu`, and repository `jenkins-tutorial`.
+4. Under **Behaviours**, enable **Discover branches**. To avoid testing the same commit as both a source branch and a PR, choose the option that excludes branches also filed as PRs.
+5. Enable **Discover pull requests from origin**. Choose the strategy that tests the PR merged with its current target branch.
+6. Under **Build Configuration**, set **Script Path** to `Jenkinsfile` and save.
+
+See [Jenkins Multibranch Pipeline documentation](https://www.jenkins.io/doc/book/pipeline/multibranch/).
+
+### 3. Start ngrok and configure the webhook
+
+1. Start Jenkins:
+
+   ```shell
+   docker compose up -d --build jenkins
+   ```
+
+2. In another terminal, start ngrok and keep it running:
+
+   ```shell
+   ngrok http 8081
+   ```
+
+3. In GitHub, open **ebisuryu/jenkins-tutorial → Settings → Webhooks**. Edit the existing Jenkins webhook, or add one if absent.
+4. Set **Payload URL** to the HTTPS URL printed by ngrok followed by `/github-webhook/`, for example:
+
+   ```text
+   https://clamor-exploring-jellied.ngrok-free.dev/github-webhook/
+   ```
+
+5. Set **Content type** to `application/json`, select **Pull requests** and **Pushes** events, and keep the webhook active.
+6. Check **Recent Deliveries** for HTTP `200`. The Jenkins homepage alone is not the webhook endpoint. Update the webhook if your ngrok URL changes.
+7. In Jenkins, select **Scan Multibranch Pipeline Now** once to discover existing branches and PRs.
+
+### 4. Create a test pull request yourself
+
+First review the existing [PR #1](https://github.com/ebisuryu/jenkins-tutorial/pull/1). It adds `reuseNode true` to the Docker test agent and limits Build and Deploy to `main`. Merge that change before following the commands below if it has not already been merged. Merging to `main` can trigger image publishing and local deployment; stop the Compose API first if it occupies port `30001`:
+
+```shell
+docker compose stop app
+```
+
+With a clean working tree, update `main` and create a new branch from it:
+
+```shell
+git switch main
+git pull --ff-only origin main
+git switch -c test/jenkins-pr-webhook
+```
+
+Make a small documentation change, commit it, and push:
+
+```shell
+printf '\n<!-- Jenkins PR webhook test -->\n' >> README.md
+git add README.md
+git commit -m "docs: verify Jenkins pull request webhook"
+git push -u origin test/jenkins-pr-webhook
+```
+
+Open [the repository](https://github.com/ebisuryu/jenkins-tutorial), select **Compare & pull request**, choose base `main` and compare `test/jenkins-pr-webhook`, then select **Create pull request**.
+
+Alternatively, if GitHub CLI is authenticated:
+
+```shell
+gh pr create --repo ebisuryu/jenkins-tutorial \
+  --base main --head test/jenkins-pr-webhook \
+  --title "docs: verify Jenkins pull request webhook" \
+  --body "Verify that opening a pull request automatically triggers the Jenkins model test."
+```
+
+Use a new branch name if `test/jenkins-pr-webhook` already exists. You can close the test PR without merging it after verification.
+
+### 5. Verify the automatic build
+
+1. In GitHub **Webhooks → Recent Deliveries**, confirm the `pull_request` event with action `opened` received HTTP `200`.
+2. Open Jenkins **Multibranch Pipeline → PR-<number> → latest build → Console Output**.
+3. Confirm checkout ran, the test reports `1 passed`, and the build ends with `Finished: SUCCESS`.
+4. On a PR, Build and Deploy should show `skipped due to when conditional`.
+5. Check the GitHub PR for the Jenkins status. If it is absent while Jenkins succeeded, repeat the credential-permission steps above.
+
+To test rebuilding an existing PR, commit another small change to its source branch and push. No manual **Build Now** should be needed. A successful webhook response confirms receipt; the Jenkins build log confirms execution.
 
 ## Run an image published by Jenkins
 
