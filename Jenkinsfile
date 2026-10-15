@@ -17,7 +17,8 @@ pipeline {
         stage('Test') {
             agent {
                 docker {
-                    image 'python:3.8' 
+                    image 'python:3.8'
+                    reuseNode true
                 }
             }
             steps {
@@ -26,6 +27,9 @@ pipeline {
             }
         }
         stage('Build') {
+            when {
+                branch 'main'
+            }
             steps {
                 script {
                     echo 'Building image for deployment..'
@@ -39,6 +43,9 @@ pipeline {
             }
         }
         stage('Deploy') {
+            when {
+                branch 'main'
+            }
             steps {
                 script {
                     docker.withRegistry('', registryCredential) {
