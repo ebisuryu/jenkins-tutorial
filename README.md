@@ -1,10 +1,15 @@
-# Jenkins Tutorial: House Price Prediction API
+# House Price Prediction API
 
 A practical CI/CD tutorial for a FastAPI house price prediction service. Build a Jenkins Multibranch Pipeline that validates pull requests, publishes Docker images, and deploys through staging and manual production approval.
 
-```text
-Pull request → Checkout → Lint + tests → Build image → Smoke test
-main         → Same checks → Publish → Deploy staging → Approve → Deploy production
+```mermaid
+flowchart LR
+    code(["Push / Pull request"]) --> ci["Lint · Test · Build"]
+    ci -->|PR| done(["CI passed"])
+    ci -->|main| staging["Publish · Staging"]
+    staging --> approval{"Approve"}
+    approval --> production(["Production"])
+
 ```
 
 Staging and production run on the same Docker daemon as Jenkins. Production requires manual approval, so this workflow implements Continuous Delivery. All commands below run from the repository root unless stated otherwise.
