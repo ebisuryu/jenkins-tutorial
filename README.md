@@ -1,117 +1,57 @@
-# [Testing] Jenkins Tutorial: House Price Prediction API
+# Jenkins Tutorial: House Price Prediction API
 
-Use Jenkins to test a trained house price prediction model, build a Docker image for its FastAPI service, and publish the image to Docker Hub.
+A practical CI/CD tutorial for a FastAPI house price prediction service. Build a Jenkins Multibranch Pipeline that validates pull requests, publishes Docker images, and deploys through staging and manual production approval.
 
-The Multibranch Pipeline runs lint, model/API tests, Docker builds, and container smoke tests for pull requests. On `main`, it publishes the tested image, deploys staging on port `30002`, and waits for approval before deploying production on port `30001`. Failed deployments restore the previous container.
-
-Run all commands from the repository root unless stated otherwise.
-
-## Prerequisites
-
-- Git and a local checkout of this repository.
-- Docker Engine with Docker Compose v2, or Docker Desktop with Compose enabled.
-- Available host ports `8081` for Jenkins, `30001` for production, and `30002` for staging. Compose also publishes Jenkins agent port `50000`.
-- A Git repository accessible to Jenkins and a Docker Hub account with image push permission, for the main pipeline.
-- Internet access to download images, Jenkins plugins, and Python dependencies.
-
-The Dockerfile and main pipeline use Python 3.8 with older pinned dependencies. Use the matching runtime for this tutorial; the current dependencies should not be assumed to work with newer Python versions.
-
-## Run the API with Docker
-
-Build and start only the API with Compose:
-
-```shell
-docker compose up -d --build app
-docker compose logs --tail=100 app
+```text
+Pull request → Checkout → Lint + tests → Build image → Smoke test
+main         → Same checks → Publish → Deploy staging → Approve → Deploy production
 ```
 
-Build and start both the API and Jenkins:
+Staging and production run on the same Docker daemon as Jenkins. Production requires manual approval, so this workflow implements Continuous Delivery. All commands below run from the repository root unless stated otherwise.
+
+| Service | Container | Host URL |
+| --- | --- | --- |
+| Jenkins | `jenkins` | http://localhost:8081 |
+| Staging API | `house-price-api-staging` | http://localhost:30002/docs |
+| Production API | `house-price-api` | http://localhost:30001/docs |
+
+## 1. Prepare the repository and Docker
+
+You need Git, Docker Engine with Compose v2 or Docker Desktop, an installed and authenticated ngrok client, and GitHub and Docker Hub accounts. GitHub CLI (`gh`) is optional.
+
+Fork [this repository](https://github.com/ebisuryu/jenkins-tutorial) into your GitHub account so you can push branches, manage webhooks, and merge pull requests. Clone your fork:
 
 ```shell
-docker compose up -d --build
+git clone https://github.com/YOUR_GITHUB_USERNAME/jenkins-tutorial.git
+cd jenkins-tutorial
 ```
 
-Alternatively, run the API without Compose:
+Replace placeholders throughout this guide before running commands:
+
+| Placeholder | Replace with |
+| --- | --- |
+| `YOUR_GITHUB_USERNAME` | The GitHub account or organization that owns your repository |
+| `YOUR_DOCKERHUB_USERNAME` | Your Docker Hub namespace with image push permission |
+| `YOUR-NGROK-DOMAIN` | The current public HTTPS domain printed by ngrok |
+| `REPLACE_WITH_FULL_COMMIT_SHA` | The full commit SHA from a successful `main` build |
+
+If you maintain the original repository, use `ebisuryu` as its owner. If you renamed your fork, also replace `jenkins-tutorial` in GitHub commands and job configuration.
+
+Verify Docker and Compose:
 
 ```shell
-docker build -f app/Dockerfile -t house-price-prediction-api:local .
-docker run -d --name house-price-api -p 30001:30000 house-price-prediction-api:local
+docker version
+docker compose version
+docker compose config --quiet
 ```
 
-Choose one method at a time; both use host port `30001`.
+Keep host ports `8081`, `30002`, and `30001` available for Jenkins, staging, and production. Compose also publishes Jenkins agent port `50000`.
 
-Open [Swagger UI](http://localhost:30001/docs) to inspect the schema and try the endpoint, or send a request from a terminal:
+Use the bundled `models/model.pkl`. The image and dependencies use Python 3.8 to match the saved model. One `requirements.txt` contains both application dependencies and test/lint tools.
 
-```shell
-curl --fail-with-body -X POST http://localhost:30001/predict \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "MSSubClass": 60,
-    "MSZoning": "RL",
-    "LotArea": 7844,
-    "LotConfig": "Inside",
-    "BldgType": "1Fam",
-    "OverallCond": 7,
-    "YearBuilt": 1978,
-    "YearRemodAdd": 1978,
-    "Exterior1st": "HdBoard",
-    "BsmtFinSF2": 0,
-    "TotalBsmtSF": 672
-  }'
-```
+## 2. Start and sign in to Jenkins
 
-The response contains a numeric `price`. The repository test expects `157551.3761237591` for this input. Every request field has a default in `HouseInfo`, so sending `{}` uses the same sample values.
-
-The API loads the model at startup. Its default path is resolved relative to `app/main.py`, independently of the working directory. `MODEL_PATH` overrides the default root `models/model.pkl`; the Docker image sets it to `/app/models/model.pkl`.
-
-For the Compose API, view logs or stop it with `docker compose logs app` and `docker compose stop app`. For the standalone Docker container:
-
-```shell
-docker logs house-price-api
-docker stop house-price-api
-docker rm house-price-api
-```
-
-## Run locally with Python
-
-The pinned scikit-learn version requires Python 3.7–3.10. Use Python 3.8 to match Jenkins and Docker; ensure `.venv` uses Python 3.8 before installing these requirements.
-
-On Apple Silicon, LightGBM 3.3.4 builds from source and needs CMake, a C++ compiler, and OpenMP. Install OpenMP with Homebrew if it is missing:
-
-```shell
-brew install libomp
-```
-
-Create and activate a Python 3.8 environment, then install the build tools before the application dependencies. CMake is kept below version 4 for the older LightGBM build scripts.
-
-```shell
-python3.8 -m venv .venv
-source .venv/bin/activate
-python -m pip install wheel 'cmake<4'
-python -m pip install -r requirements.txt
-python -m pytest
-python -m uvicorn app.main:app --host 0.0.0.0 --port 30001
-```
-
-If you use `uv`, install Python 3.8 with `uv python install 3.8` if needed, then create `.venv` and install dependencies into it explicitly:
-
-```shell
-uv venv --python 3.8 .venv
-source .venv/bin/activate
-uv pip install --python .venv/bin/python wheel 'cmake<4'
-uv pip install --python .venv/bin/python -r requirements.txt
-```
-
-Keep the API running while sending requests from another terminal. To use `app/client.py`, install its additional dependency in the same environment:
-
-```shell
-python -m pip install requests
-python app/client.py
-```
-
-`requests` is not included in root `requirements.txt`. Tests cover the saved model and FastAPI endpoints; the pipeline also smoke tests the running image.
-
-## Start Jenkins
+Start only Jenkins for the CI/CD walkthrough. The pipeline will create the API containers later.
 
 ```shell
 docker compose up -d --build jenkins
@@ -119,46 +59,44 @@ docker compose ps
 docker compose logs --tail=100 jenkins
 ```
 
-Open [Jenkins](http://localhost:8081). On first startup, retrieve the unlock password:
+Open [Jenkins](http://localhost:8081). For a new installation, retrieve the initial password:
 
 ```shell
-docker compose exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
 ```
 
-Enter the password, install the suggested plugins, and create an administrator account. The password above unlocks initial setup; use your new account for subsequent sign-ins.
+Unlock Jenkins, install the suggested plugins, and create an administrator account. For an existing installation, sign in with the account you previously created. The file contains the initial setup password; it does not reveal a password changed after setup.
 
-Compose builds `jenkins/Dockerfile` from `jenkins/jenkins:lts-jdk21`, adding Docker CLI, Buildx, and the Pipeline, Git, GitHub Branch Source, Docker Pipeline, JUnit, and Timestamper plugins. The `jenkins_home` named volume preserves configuration, plugins, credentials, and jobs across container restarts.
-
-This local configuration runs Jenkins as root and mounts `/var/run/docker.sock`. Jobs using that socket can control the host Docker daemon. Use it for trusted tutorial jobs; privileged mode is not required.
-
-## Prepare Jenkins for Docker builds
-
-Under **Manage Jenkins → Plugins**, ensure these plugins are installed:
-
-| Plugin | Used for |
-| --- | --- |
-| Pipeline | Running the pipeline scripts. |
-| Git | Checking out the repository. |
-| Docker Pipeline | The Docker agent, `docker.build`, and `docker.withRegistry`. |
-| Timestamper | The `timestamps()` option. |
-
-The custom Jenkins image includes Docker CLI and the plugins above. Compose mounts the host socket to provide access to the Docker daemon. Ensure Docker Engine or Docker Desktop is running before starting Jenkins.
-
-For jobs running inside the Jenkins container, check both:
+The custom `jenkins/Dockerfile` installs Docker CLI, Buildx, Pipeline, Git, GitHub Branch Source, Docker Pipeline, Timestamper, and JUnit. Verify Docker access inside Jenkins:
 
 ```shell
-docker compose exec jenkins docker --version
-docker compose exec jenkins docker info
+docker compose exec jenkins docker version
 docker compose exec jenkins docker run --rm hello-world
 ```
 
-After changing `jenkins/Dockerfile`, run `docker compose up -d --build jenkins` to rebuild and recreate Jenkins while retaining its named volume. See the official [Jenkins Docker installation guide](https://www.jenkins.io/doc/book/installing/docker/) for image customization and [Using Docker with Pipeline](https://www.jenkins.io/doc/book/pipeline/docker/) for execution requirements.
+Both client and server information should appear in `docker version`; `hello-world` should finish successfully. If an existing Jenkins volume is missing a plugin, install it under **Manage Jenkins → Plugins** and restart when prompted, after active builds finish.
 
-The main pipeline uses `agent any`, so ensure all eligible nodes have the required tools, or assign a suitable agent label. Complete this setup before running the main pipeline. Use `jenkins/docker-python.Jenkinsfile` to verify Docker Pipeline by running Python in a container. `jenkins/parallel.Jenkinsfile` only prints messages and does not require Docker.
+The `jenkins_home` volume preserves users, credentials, plugins, and jobs. This local setup runs Jenkins as root with the host Docker socket mounted; use it for trusted tutorial jobs.
 
-## Configure Docker Hub credentials
+## 3. Configure the Jenkins URL
 
-Create a Docker Hub repository for the application. In `Jenkinsfile`, replace the sample image repository with your own:
+Choose one address for browser access and set **Manage Jenkins → System → Jenkins Location → Jenkins URL** to that address.
+
+For this local walkthrough, use:
+
+```text
+http://localhost:8081/
+```
+
+Keep using that address when signing in and approving builds. Jenkins uses its configured URL in generated links, including Deploy/Abort links in console logs.
+
+The GitHub webhook will use a public ngrok URL in step 5; it can differ from your browser address. Build links published to GitHub will use the configured Jenkins URL, so localhost links are accessible only on your machine. If you need remotely accessible build links, use the current ngrok HTTPS address as Jenkins URL and access the UI through that same address.
+
+## 4. Add credentials and set the image repository
+
+### Docker Hub
+
+Create a Docker Hub repository named `house-price-prediction-api`. The current `Jenkinsfile` uses `ebisuryu/house-price-prediction-api`; change `registry` if publishing under another account:
 
 ```groovy
 environment {
@@ -167,240 +105,286 @@ environment {
 }
 ```
 
-In **Manage Jenkins → Credentials**, add a credential available to the job:
+In **Manage Jenkins → Credentials → System → Global credentials**, add:
 
-- **Kind:** Username with password.
-- **Username:** Your Docker Hub username.
-- **Password:** Your Docker Hub access token.
-- **ID:** `dockerhub`, matching `registryCredential`.
-
-Commit the repository-name change to the branch Jenkins will check out. Store the token in Jenkins credentials.
-
-## Create and run a pipeline job
-
-Push the repository, including the model artifact and pipeline files, to a Git remote Jenkins can access. Then configure a job:
-
-1. Select **New Item**, enter a name, choose **Pipeline**, and click **OK**.
-2. Set **Definition** to **Pipeline script from SCM**.
-3. Choose **Git**, enter the repository URL, and select checkout credentials if the repository is private.
-4. Set the branch specifier to your branch, such as `*/main`.
-5. Set **Script Path** to one of the files below and save.
-6. Select **Build Now** and inspect the build's **Console Output**.
-
-| Script Path | Behavior |
+| Field | Value |
 | --- | --- |
-| `jenkins/docker-python.Jenkinsfile` | Verifies Python runs in Docker, prints Test and Build messages, then waits for approval before the Deploy message. |
-| `jenkins/parallel.Jenkinsfile` | Runs `test1` and `test2` in parallel, followed by Build and Deploy messages. |
-| `Jenkinsfile` | Runs lint, model/API tests and image smoke tests; on `main`, publishes and deploys staging, then production after approval. |
+| Kind | Username with password |
+| Username | Your Docker Hub username |
+| Password | Your Docker Hub access token |
+| ID | `dockerhub` |
 
-The main pipeline keeps ten builds for up to fourteen days, publishes JUnit reports, limits execution to sixty minutes, and serializes runs of each branch. Production approval expires after thirty minutes. Jenkins performs the default SCM checkout before the stages.
+Commit and push any repository-name change to the branch Jenkins will build. Store tokens only in Jenkins credentials.
 
-### Pipeline stages
+### GitHub
 
-| Stage | Pull request / branch | `main` |
-| --- | --- | --- |
-| Lint and test | Ruff, model and FastAPI tests in the Docker test target | Same |
-| Build image | Build the production target | Same |
-| Smoke test image | Start an isolated container; check `/health` and `/predict` | Same |
-| Publish | Skip | Push `<registry>:sha-<full-commit-sha>` |
-| Deploy staging | Skip | Deploy `house-price-api-staging` on port `30002`; smoke test |
-| Approve production | Skip | Select **Deploy** in Jenkins within thirty minutes |
-| Deploy production | Skip | Deploy `house-price-api` on port `30001`; smoke test |
+Create a fine-grained personal access token for the repository owner and select this repository. Grant these repository permissions:
 
-Staging and production use the same local image that passed the image smoke test. The pipeline does not rebuild between environments or deploy from `latest`. This is Continuous Delivery because production requires approval. This tutorial runs both environments on the Docker daemon used by Jenkins; it does not provision a remote production server.
+| Permission | Access |
+| --- | --- |
+| Contents | Read-only |
+| Pull requests | Read-only |
+| Metadata | Read-only, automatically included |
+| Commit statuses | Read and write |
 
-Both Docker targets install the shared `requirements.txt`, including runtime libraries and test/lint tools. The `test` target additionally copies the tests, scripts, and tool configuration; the default `production` target contains the API and model. Tests run inside the image and Jenkins copies out their JUnit report, so no host workspace bind mount is needed. Test containers are removed in `post`, including on failure.
+Add another **Username with password** credential in Jenkins: your GitHub username, the token as its password, and ID `github-credentials`.
 
-### Deployment and rollback
+The Docker Hub and GitHub credentials serve different services. The GitHub token above is for repository discovery and status reporting; configure the webhook manually in the next step. See [GitHub token permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens).
 
-`scripts/deploy.sh` renames the previous container to `<name>-rollback`, stops it, starts the new version, and smoke tests the API. On failure or a handled termination signal it removes the failed candidate, restores the old container's name, and restarts it with its original configuration. The failed deployment still reports failure to Jenkins. After success the old container is removed. Images are retained for manual rollback.
+## 5. Connect GitHub to Jenkins with a webhook
 
-There is a short outage during replacement. A host crash or forced kill can leave a `-rollback` container; the next deployment refuses to overwrite it. Inspect and restore that container before retrying. This is not a zero-downtime rollout.
-
-For manual deployment on the same Docker host:
+Start ngrok in another terminal and keep it running:
 
 ```shell
-docker build --target production -f app/Dockerfile -t house-price-api:manual .
-sh scripts/deploy.sh house-price-api:manual staging
-# After reviewing staging:
-sh scripts/deploy.sh house-price-api:manual production
+ngrok http 8081
 ```
 
-For an older published release, authenticate if needed, pull its exact tag, then deploy it:
+Copy the current public HTTPS URL from ngrok. In **GitHub repository → Settings → Webhooks → Add webhook**, configure:
 
-```shell
-docker pull ebisuryu/house-price-prediction-api:sha-<previous-commit-sha>
-sh scripts/deploy.sh ebisuryu/house-price-prediction-api:sha-<previous-commit-sha> production
+| Setting | Value |
+| --- | --- |
+| Payload URL | Your current ngrok HTTPS URL followed by `/github-webhook/` |
+| Content type | `application/json` |
+| Events | Let me select individual events → **Pushes** and **Pull requests** |
+| Active | Enabled |
+
+For example, replace `YOUR-NGROK-DOMAIN` below with the domain ngrok actually assigned:
+
+```text
+https://YOUR-NGROK-DOMAIN/github-webhook/
 ```
 
-Stop the Compose `app` service before the first pipeline production deployment if it occupies `30001`. Do not run `docker compose up app` alongside the pipeline-managed production container.
+Check **Recent Deliveries** after adding the webhook or creating a PR. A successful delivery returns HTTP `200`. If ngrok stops or its domain changes, restart the tunnel, update the webhook URL, and redeliver the failed event. The Jenkins homepage alone is not the webhook endpoint.
 
-### Verify changes locally
+## 6. Create the Multibranch Pipeline
 
-```shell
-python -m pip install -r requirements.txt
-ruff check app tests scripts
-python -m pytest -q --junitxml=reports/junit.xml
+Before saving the job, complete the credentials above and ensure ports `30002` and `30001` are available. Saving can immediately discover and run `main`, which publishes an image and deploys staging; production still waits for approval.
 
-docker build --target test -f app/Dockerfile -t house-price-ci:local .
-docker run --rm house-price-ci:local
-```
-
-The image smoke test verifies readiness and a known prediction. API tests also verify invalid input returns `422`. Because this is a serialized trained model, keep its Python and ML dependency versions compatible when upgrading.
-
-### Jenkins and GitHub setup
-
-Use a Multibranch Pipeline with GitHub Branch Source and Script Path `Jenkinsfile`. The custom Jenkins image includes `github-branch-source`, `docker-workflow`, `junit`, and the Pipeline plugins. Keep Docker Hub credentials in Jenkins under ID `dockerhub`.
-
-Keep the public webhook tunnel running and point GitHub to its current HTTPS URL plus `/github-webhook/`. Confirm a `pull_request` delivery receives `200`. In GitHub branch protection or rulesets, require the Jenkins status check shown by a successful PR build before merging into `main`. These GitHub settings are managed outside this repository.
-
-
-## Automatically test pull requests
-
-Use a **Multibranch Pipeline** with GitHub Branch Source for pull request discovery. The separate Pipeline jobs above are useful for manual examples.
-
-### 1. Configure GitHub credentials and fix status reporting
-
-A build can succeed in Jenkins while GitHub shows no result. If Jenkins logs `Could not update commit status` with HTTP `403` and `Resource not accessible by personal access token`, update the token used by `github-credentials`:
-
-1. In GitHub, open **Settings → Developer settings → Personal access tokens → Fine-grained tokens**.
-2. Edit the token used by Jenkins, or generate a replacement. Select resource owner `ebisuryu` and grant access to `jenkins-tutorial`.
-3. Set these repository permissions:
-
-   | Permission | Access |
-   | --- | --- |
-   | Contents | Read-only |
-   | Pull requests | Read-only |
-   | Metadata | Read-only (automatically included) |
-   | Commit statuses | Read and write |
-
-4. Save the permissions. If replacing the token, copy it directly into Jenkins: **Manage Jenkins → Credentials → System → Global credentials → github-credentials → Update**. Use **Username with password**, username `ebisuryu`, and the token as the password. Keep ID `github-credentials`.
-5. In the Multibranch job, confirm **Branch Sources → GitHub → Credentials** selects `github-credentials`.
-6. Rerun the PR build and confirm the commit status appears on GitHub. Existing completed builds are not automatically republished when token permissions change.
-
-These GitHub credentials are separate from the `dockerhub` credentials used to publish images. See [GitHub token permissions](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens).
-
-### 2. Configure the Multibranch job
-
-1. Install **GitHub Branch Source** under **Manage Jenkins → Plugins**.
-2. Create **New Item → Multibranch Pipeline**, or configure the existing **Multibranch Pipeline** job.
-3. Under **Branch Sources → GitHub**, select `github-credentials`, owner `ebisuryu`, and repository `jenkins-tutorial`.
-4. Under **Behaviours**, enable **Discover branches**. To avoid testing the same commit as both a source branch and a PR, choose the option that excludes branches also filed as PRs.
-5. Enable **Discover pull requests from origin**. Choose the strategy that tests the PR merged with its current target branch.
-6. Under **Build Configuration**, set **Script Path** to `Jenkinsfile` and save.
-
-See [Jenkins Multibranch Pipeline documentation](https://www.jenkins.io/doc/book/pipeline/multibranch/).
-
-### 3. Start ngrok and configure the webhook
-
-1. Start Jenkins:
-
-   ```shell
-   docker compose up -d --build jenkins
-   ```
-
-2. In another terminal, start ngrok and keep it running:
-
-   ```shell
-   ngrok http 8081
-   ```
-
-3. In GitHub, open **ebisuryu/jenkins-tutorial → Settings → Webhooks**. Edit the existing Jenkins webhook, or add one if absent.
-4. Set **Payload URL** to the HTTPS URL printed by ngrok followed by `/github-webhook/`, for example:
-
-   ```text
-   https://clamor-exploring-jellied.ngrok-free.dev/github-webhook/
-   ```
-
-5. Set **Content type** to `application/json`, select **Pull requests** and **Pushes** events, and keep the webhook active.
-6. Check **Recent Deliveries** for HTTP `200`. The Jenkins homepage alone is not the webhook endpoint. Update the webhook if your ngrok URL changes.
-7. In Jenkins, select **Scan Multibranch Pipeline Now** once to discover existing branches and PRs.
-
-### 4. Create a test pull request yourself
-
-First review the existing [PR #1](https://github.com/ebisuryu/jenkins-tutorial/pull/1). It introduced the initial PR test workflow; the current pipeline also builds and smoke tests images for PRs. Merge that change before following the commands below if it has not already been merged. Merging to `main` triggers image publishing and staging deployment; production waits for approval. Before the first production deployment, stop the Compose API if it occupies port `30001`:
+If you previously started the optional Compose API, stop it to free port `30001`:
 
 ```shell
 docker compose stop app
 ```
 
-With a clean working tree, update `main` and create a new branch from it:
+1. Select **New Item → Multibranch Pipeline**. For this guide, use the name `Multibranch Pipeline`, or reuse your existing job.
+2. Under **Branch Sources → Add source → GitHub**, select `github-credentials`.
+3. Set owner to `YOUR_GITHUB_USERNAME` and repository to `jenkins-tutorial`, or the name of your fork.
+4. Under **Behaviours → Discover branches**, select the strategy that excludes branches also filed as PRs.
+5. Enable **Discover pull requests from origin** and select the strategy that tests the PR merged with its current target branch.
+6. Under **Build Configuration**, set **Script Path** to `Jenkinsfile`.
+7. Save, then use **Scan Multibranch Pipeline Now** if discovery has not started.
+
+Branches must contain `Jenkinsfile`. PR jobs appear as `PR-<number>`. Use the Multibranch job for the main CI/CD workflow: its `branch 'main'` conditions depend on branch metadata. The standalone demo jobs are described at the end of this guide.
+
+The pipeline uses `agent any`; the execution node must have Git, a POSIX shell, Docker CLI, and access to the Docker daemon. This walkthrough executes on the Jenkins container. See [Jenkins Multibranch Pipeline documentation](https://www.jenkins.io/doc/book/pipeline/multibranch/).
+
+## 7. Create a PR and verify CI
+
+From a clean working tree, create a new branch from the current remote `main`:
 
 ```shell
 git switch main
 git pull --ff-only origin main
-git switch -c test/jenkins-pr-webhook
-```
-
-Make a small documentation change, commit it, and push:
-
-```shell
-printf '\n<!-- Jenkins PR webhook test -->\n' >> README.md
+git switch -c test/cicd-check
+printf '\n<!-- CI webhook check -->\n' >> README.md
 git add README.md
-git commit -m "docs: verify Jenkins pull request webhook"
-git push -u origin test/jenkins-pr-webhook
+git commit -m "docs: verify Jenkins CI webhook"
+git push -u origin test/cicd-check
 ```
 
-Open [the repository](https://github.com/ebisuryu/jenkins-tutorial), select **Compare & pull request**, choose base `main` and compare `test/jenkins-pr-webhook`, then select **Create pull request**.
-
-Alternatively, if GitHub CLI is authenticated:
+Choose a different branch name if `test/cicd-check` already exists. On GitHub, create a PR with base `main` and compare `test/cicd-check`. Alternatively, with an authenticated GitHub CLI:
 
 ```shell
-gh pr create --repo ebisuryu/jenkins-tutorial \
-  --base main --head test/jenkins-pr-webhook \
-  --title "docs: verify Jenkins pull request webhook" \
-  --body "Verify that opening a pull request automatically triggers the Jenkins model test."
+gh pr create --repo YOUR_GITHUB_USERNAME/jenkins-tutorial \
+  --base main --head test/cicd-check \
+  --title "docs: verify Jenkins CI webhook" \
+  --body "Verify lint, model/API tests, image build, and container smoke test."
 ```
 
-Use a new branch name if `test/jenkins-pr-webhook` already exists. You can close the test PR without merging it after verification.
+Verify the following:
 
-### 5. Verify the automatic build
+1. GitHub **Webhooks → Recent Deliveries** shows `pull_request`, action `opened`, with HTTP `200`.
+2. Jenkins creates `Multibranch Pipeline → PR-<number>`.
+3. Open the build's **Console Output**. Lint, all six tests, the production image build, and the image smoke test should pass.
+4. **Publish**, **Deploy staging**, **Approve production**, and **Deploy production** are skipped for a PR.
+5. The build ends with `Finished: SUCCESS`, and GitHub shows the Jenkins status. JUnit results are available from the build's test report; the XML is also archived.
 
-1. In GitHub **Webhooks → Recent Deliveries**, confirm the `pull_request` event with action `opened` received HTTP `200`.
-2. Open Jenkins **Multibranch Pipeline → PR-<number> → latest build → Console Output**.
-3. Confirm checkout, lint, all six tests, image build, and image smoke test succeed, and the build ends with `Finished: SUCCESS`.
-4. On a PR, Publish, Deploy staging, Approve production, and Deploy production should show `skipped due to when conditional`.
-5. Check the GitHub PR for the Jenkins status. If it is absent while Jenkins succeeded, repeat the credential-permission steps above.
+Push another commit to the same branch to verify automatic rebuilding. A webhook `200` confirms receipt; a successful Jenkins build confirms execution. **Scan Multibranch Pipeline Now** can discover an existing PR if an event was missed, but it does not repair a broken webhook.
 
-To test rebuilding an existing PR, commit another small change to its source branch and push. No manual **Build Now** should be needed. A successful webhook response confirms receipt; the Jenkins build log confirms execution.
+In GitHub branch protection or rulesets, require the Jenkins status check shown by a successful PR build before merging into `main`.
 
-## Run an image published by Jenkins
+## 8. Merge, review staging, and approve production
 
-After the main pipeline succeeds, substitute your repository name and full Git commit SHA:
+Merge the PR on GitHub after its checks pass. The `main` build runs these stages:
+
+| Stage | Action |
+| --- | --- |
+| Prepare | Generate image and temporary container names after the default SCM checkout |
+| Lint and test | Run Ruff and six model/API tests in the Docker `test` target |
+| Build image | Build the `production` target |
+| Smoke test image | Check `/health` and a known `/predict` result in an isolated container |
+| Publish | Push `<registry>:sha-<full-commit-sha>` to Docker Hub |
+| Deploy staging | Replace `house-price-api-staging` on port `30002` and smoke test it |
+| Approve production | Wait up to thirty minutes for a decision |
+| Deploy production | Replace `house-price-api` on port `30001` and smoke test it |
+
+Staging and production use the same local image that passed the image smoke test; it is not rebuilt between deployments. Use the image tag printed by the successful `main` build when identifying a release.
+
+When **Approve production** is waiting:
+
+1. Check staging at [Swagger UI](http://localhost:30002/docs) and run:
+
+   ```shell
+   curl --fail http://localhost:30002/health
+   curl --fail -X POST http://localhost:30002/predict \
+     -H 'Content-Type: application/json' -d '{}'
+   ```
+
+2. Open **Multibranch Pipeline → main → current build → Input / Paused for Input**. You can also append `/input/` to that build's URL. For build number `N`, the local URL is:
+
+   ```text
+   http://localhost:8081/job/Multibranch%20Pipeline/job/main/N/input/
+   ```
+
+3. Sign in and select **Deploy** to continue, or **Abort** to cancel the build. Aborting or letting approval expire leaves the deployed staging version and existing production version in place.
+4. After selecting **Deploy**, wait for `Finished: SUCCESS`, then verify production:
+
+   ```shell
+   curl --fail http://localhost:30001/health
+   curl --fail -X POST http://localhost:30001/predict \
+     -H 'Content-Type: application/json' -d '{}'
+   docker ps --filter name=house-price-api
+   ```
+
+`/health` should return `{"status":"ok","model_loaded":true}`. The default prediction is approximately `157551.3761237591`. Every request field has a default, so `{}` uses the sample house input. See [Jenkins Input Step](https://www.jenkins.io/doc/pipeline/steps/pipeline-input-step/) for the approval interaction.
+
+If console Deploy/Abort links do not respond, open the build's Input page directly on the address where you are signed in. Console links can point to the configured Jenkins URL even when you opened the UI elsewhere. Changing Jenkins URL does not rewrite links already recorded in an older build log.
+
+The pipeline keeps up to ten builds for up to fourteen days, archives JUnit XML, and cleans temporary test/smoke containers and its workspace in `post`. Runs of each branch are serialized; a waiting `main` approval blocks later `main` builds. The overall pipeline timeout is sixty minutes.
+
+## 9. Roll back a release
+
+`scripts/deploy.sh` renames the existing container to `<name>-rollback`, stops it, starts the candidate, and checks `/health` and `/predict`. If the deployment fails or receives a handled termination signal, it removes the candidate and restarts the previous container with its original configuration. The Jenkins build still reports failure. If no previous container exists, the failed candidate is removed.
+
+After success, the previous container is removed; its image is retained. Replacement causes a short outage. A host crash or forced kill can leave a `-rollback` container, and the script refuses to overwrite that recovery state. Inspect both containers and restore or resolve the interrupted rollout before retrying.
+
+To deploy an older published release manually, copy its full image tag from a previous successful `main` build. Run this on the same Docker host as the application, after any active deployment has finished:
 
 ```shell
-docker pull YOUR_DOCKERHUB_USERNAME/house-price-prediction-api:sha-COMMIT_SHA
-docker run -d --name house-price-api -p 30001:30000 \
-  YOUR_DOCKERHUB_USERNAME/house-price-prediction-api:sha-COMMIT_SHA
+IMAGE='YOUR_DOCKERHUB_USERNAME/house-price-prediction-api:sha-REPLACE_WITH_FULL_COMMIT_SHA'
+docker pull "$IMAGE"
+sh scripts/deploy.sh "$IMAGE" staging
+# Verify staging before replacing production:
+sh scripts/deploy.sh "$IMAGE" production
 ```
 
-Stop and remove any existing `house-price-api` container first using the commands above. Open `http://localhost:30001/docs` or repeat the sample request to verify the running service.
+Use your configured registry namespace if different, and run `docker login` first if the image requires authentication. Manual deployment runs outside Jenkins and does not have its approval gate.
 
-## Explore model training
+## Optional: run and test without Jenkins
 
-The notebook covers data exploration, preprocessing, a linear regression baseline, LightGBM training, and evaluation. Run it with `notebooks/` as the working directory so its `../data` and `../app/models` paths resolve correctly.
+### Docker
 
-Notebook dependencies such as Jupyter, `openpyxl`, Matplotlib, and Seaborn are additional to the API requirements. The export cell removes and recreates `../app/models` before saving `model.pkl`; review that cell before running it. Retraining may change predictions, so review the test's fixed expected value before committing a replacement artifact.
+Run the same lint and tests as CI:
+
+```shell
+docker build --target test -f app/Dockerfile -t house-price-ci:local .
+docker run --rm house-price-ci:local
+```
+
+Both Docker targets install the shared `requirements.txt`. The `test` target additionally copies tests, scripts, and tool configuration. The default `production` target runs the API as `appuser` and includes a Docker health check. Build from the repository root because the Dockerfile copies root `requirements.txt` and `models/`.
+
+For an independent API demo, when production is not using port `30001`:
+
+```shell
+docker compose up -d --build app
+curl --fail http://localhost:30001/health
+docker compose logs --tail=100 app
+# Before returning to pipeline-managed production:
+docker compose stop app
+```
+
+Wait for startup before sending the request. Do not start the Compose `app` alongside the pipeline-managed production container; both use `30001`.
+
+### Python 3.8
+
+Use a Python 3.8 environment to match the image and saved model. On Apple Silicon, LightGBM may need a compiler, CMake, and OpenMP; install `libomp` with Homebrew if needed.
+
+```shell
+python3.8 -m venv .venv
+source .venv/bin/activate
+python -m pip install wheel 'cmake<4'
+python -m pip install -r requirements.txt
+ruff check app tests scripts
+python -m pytest -q --junitxml=reports/junit.xml
+python -m uvicorn app.main:app --host 0.0.0.0 --port 30003
+```
+
+If you use `uv` to manage Python, create the environment and install dependencies with:
+
+```shell
+uv python install 3.8
+uv venv --python 3.8 .venv
+uv pip install --python .venv/bin/python wheel 'cmake<4'
+uv pip install --python .venv/bin/python -r requirements.txt
+source .venv/bin/activate
+ruff check app tests scripts
+python -m pytest -q --junitxml=reports/junit.xml
+python -m uvicorn app.main:app --host 0.0.0.0 --port 30003
+```
+
+The direct Python demo uses `30003` so it can coexist with pipeline-managed staging and production. Send requests to `http://localhost:30003/predict` or open `/docs`. The model defaults to root `models/model.pkl`; `MODEL_PATH` overrides it. Docker sets `MODEL_PATH=/app/models/model.pkl`.
+
+`app/client.py` is an optional client hardcoded to port `30001` and requires `requests`, which is not included in `requirements.txt`. Install it separately with `python -m pip install requests` if using that client.
+
+### Standalone Jenkins demo jobs
+
+These examples are separate from the Multibranch workflow:
+
+| Script Path | Behavior |
+| --- | --- |
+| `jenkins/docker-python.Jenkinsfile` | Runs Python in Docker, prints Test/Build messages, and waits for approval before its Deploy message |
+| `jenkins/parallel.Jenkinsfile` | Prints two parallel test messages, then Build/Deploy messages |
+
+Create **New Item → Pipeline**, select **Pipeline script from SCM**, choose Git and this repository, set your branch (for example `*/main`), and enter one of the Script Paths above. Save and select **Build Now**. These demos do not publish or deploy the API.
+
+### Model training
+
+Run `notebooks/house_price_prediction.ipynb` with `notebooks/` as the working directory. It reads `../data/house_price_prediction.xlsx` and currently exports to `../app/models/model.pkl`, removing that export directory before saving. The application consumes root `models/model.pkl`; review and copy a retrained artifact there deliberately, then update the expected prediction in the tests and smoke test together.
+
+Jupyter, `openpyxl`, Matplotlib, and Seaborn are optional training dependencies not included in the application requirements.
 
 ## Troubleshooting
 
 | Symptom | Check or action |
 | --- | --- |
-| Jenkins is unavailable at `localhost:8081` | Check `docker compose ps`, Jenkins logs, and whether port `8081` is already in use. |
-| `docker: not found` in Jenkins | Install the CLI in the execution environment; the socket mount and Docker Pipeline plugin do not install it. |
-| Jenkins cannot connect to Docker | Check that the host daemon is running and the execution node can access its configured socket. Run `docker info` on that node. |
-| Jenkins rejects the Docker agent or cannot resolve `docker` | Install Docker Pipeline and restart Jenkins if prompted. |
-| Docker Hub push is denied | Verify the `dockerhub` credential, token permissions, and repository namespace. |
-| Dependencies fail to install with a newer Python version | Use the Python 3.8 runtime used by the Dockerfile and pipeline. |
-| The model cannot be loaded | Check root `models/model.pkl`, `MODEL_PATH`, and compatibility with the saved model's library versions. |
-| The prediction test fails after retraining | Compare the new artifact and prediction with the test's expected value and tolerance. |
-| API requests fail on port `30001` | Check logs and the `30001:30000` mapping; the container listens on `30000`. |
-| A Git push does not start Jenkins | Configure polling or a reachable webhook and confirm the job uses the intended branch. |
+| Cannot sign in as `admin` | The initial password command in step 2 only retrieves the setup password; use your saved account/password if changed |
+| Jenkins is unavailable on `8081` | Check Docker, `docker compose ps`, and `docker compose logs --tail=100 jenkins` |
+| `docker: not found` or daemon access denied | Rebuild the custom Jenkins service and repeat the in-container Docker checks in step 2 |
+| PR does not trigger a build | Keep ngrok running; verify the current `/github-webhook/` URL, Pull requests event, and delivery status; redeliver if needed |
+| Webhook returns `404` | Check that the ngrok domain is current and forwards to `8081`, and that the path is `/github-webhook/` |
+| Webhook returns `200` but no PR job appears | Check GitHub Branch Source credentials, PR discovery behaviour, and the branch indexing log |
+| GitHub status is missing or says `Resource not accessible by personal access token` | Grant `github-credentials` Commit statuses Read and write permission and rerun the build; old results are not republished automatically |
+| Docker Hub push is denied | Verify `registry`, the `dockerhub` credential, token permission, and repository ownership |
+| Deploy/Abort in the console does nothing | Use the current build's `/input/` page; align the UI address with Jenkins URL and sign in there |
+| No approval is available | Open the current `main` build; PR builds skip approval, and completed/expired builds cannot be approved |
+| Later `main` builds are waiting | Finish or abort the existing approval; `disableConcurrentBuilds()` serializes this branch |
+| Port `30001` or `30002` is already allocated | Identify the owner with `docker ps`; stop the optional Compose API if it occupies `30001` |
+| Deployment refuses an existing `-rollback` container | Inspect recovery state from an interrupted deployment before retrying |
+| Model loading or predictions fail | Verify `models/model.pkl`, `MODEL_PATH`, Python/ML dependency compatibility, and expected prediction values |
 
-## Stop Jenkins
+## Stop the tutorial services
+
+Stop Jenkins while retaining its data:
 
 ```shell
-docker compose down
+docker compose stop jenkins
 ```
 
-This removes the Compose containers while retaining the named volume. Adding `--volumes` also deletes stored Jenkins configuration, credentials, and jobs.
+Stop the tunnel with Ctrl+C in its terminal. Pipeline-created API containers are independent of Compose; stop each one that exists when you no longer need it:
+
+```shell
+docker stop house-price-api-staging
+docker stop house-price-api
+```
+
+`docker compose down` removes Compose services while retaining the Jenkins volume; it does not remove the pipeline-created API containers. Adding `--volumes` also deletes the stored Jenkins configuration, credentials, and jobs.
