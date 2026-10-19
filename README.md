@@ -1,4 +1,4 @@
-# House Price Prediction API
+# Jenkins CI/CD: House Price Prediction API
 
 A practical CI/CD tutorial for a FastAPI house price prediction service. Build a Jenkins Multibranch Pipeline that validates pull requests, publishes Docker images, and deploys through staging and manual production approval.
 
