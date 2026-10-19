@@ -2,6 +2,7 @@ from pathlib import Path
 
 import joblib
 import pandas as pd
+import pytest
 
 # Define path to our model
 MODEL_DIR = Path(__file__).resolve().parents[1] / "models"
@@ -21,4 +22,4 @@ def test_model_correctness():
         "BsmtFinSF2": 0,
         "TotalBsmtSF": 672
     }
-    assert clf.predict(pd.DataFrame(data, index=[0]))[0] == 157551.3761237591
+    assert clf.predict(pd.DataFrame(data, index=[0]))[0] == pytest.approx(157551.3761237591)
