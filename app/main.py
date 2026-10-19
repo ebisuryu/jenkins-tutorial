@@ -28,8 +28,12 @@ class HouseInfo(BaseModel):
 
 # Load the bundled model unless MODEL_PATH is provided.
 clf = joblib.load(
-    os.environ.get("MODEL_PATH", Path(__file__).resolve().parent / "models" / "model.pkl")
+    os.environ.get("MODEL_PATH", Path(__file__).resolve().parents[1] / "models" / "model.pkl")
 )
+
+@app.get('/health')
+def health():
+    return {'status': 'ok', 'model_loaded': clf is not None}
 
 # Creating an endpoint to receive the data
 # to make prediction on.

@@ -14,4 +14,4 @@ RUN apt-get update \
 
 USER jenkins
 
-RUN jenkins-plugin-cli --plugins workflow-aggregator git docker-workflow timestamper
+RUN jenkins-plugin-cli --plugins workflow-aggregator git github-branch-source docker-workflow timestamper junit
